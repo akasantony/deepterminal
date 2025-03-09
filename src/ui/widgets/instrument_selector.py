@@ -8,11 +8,11 @@ from textual.widgets import Input, Button, Label, Select, Static, DataTable
 from textual.reactive import reactive
 from textual import work
 from textual.message import Message
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from src.api.upstox_client import UpstoxClient
 from src.models.instrument import Instrument
-
+from src.utils.logger import logger
 
 class InstrumentSelector(Container):
     """Widget for selecting trading instruments"""
@@ -43,7 +43,11 @@ class InstrumentSelector(Container):
         """Compose the widget"""
         with Vertical(id="instrument_search_container"):
             with Horizontal(id="search_controls"):
-                yield Select(self.EXCHANGES, id="exchange_select", prompt="Select Exchange")
+                # Initialize the Select with options directly
+                exchange_select = Select(self.EXCHANGES, id="exchange_select", prompt="Select Exchange")
+                exchange_select.value = "NSE"  # Set default value
+                yield exchange_select
+                
                 yield Input(placeholder="Search by symbol or name", id="search_input")
                 yield Button("Search", id="search_button", variant="primary")
             
@@ -97,6 +101,12 @@ class InstrumentSelector(Container):
             self.error_message = "Client not initialized"
             return
         
+        # Check if client is authenticated
+        if not self.client.authenticator.is_authenticated():
+            if not self.client.authenticator.authenticate():
+                self.error_message = "Authentication required"
+                return
+        
         self.is_loading = True
         self.error_message = ""
         
@@ -148,6 +158,7 @@ class InstrumentSelector(Container):
                 self.query_one("#status_message").update("No results found")
         
         except Exception as e:
+            logger.error(f"Error searching instruments: {e}")
             self.error_message = f"Error searching instruments: {str(e)}"
         
         self.is_loading = False

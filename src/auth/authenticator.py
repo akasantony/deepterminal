@@ -19,33 +19,59 @@ from src.utils.logger import logger
 class CallbackHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OAuth callback"""
 
-    def __init__(self, *args, callback_fn: Callable[[str], None], **kwargs):
+    def __init__(self, *args, callback_fn=None, **kwargs):
         self.callback_fn = callback_fn
-        super().__init__(*args, **kwargs)
+        # This is required since BaseHTTPRequestHandler calls __init__ in a different way
+        BaseHTTPRequestHandler.__init__(self, *args, **kwargs)
 
     def do_GET(self):
         """Handle GET requests to the callback URL"""
         # Parse query parameters
-        query = parse_qs(urlparse(self.path).query)
+        query_components = urlparse(self.path).query
+        query_params = parse_qs(query_components)
         
         # Extract code or error
-        if 'code' in query:
-            code = query['code'][0]
+        if 'code' in query_params:
+            code = query_params['code'][0]
+            logger.info(f"Authentication code received {code}")
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b"Authentication successful! You can close this window.")
-            self.callback_fn(code)
+            if self.callback_fn:
+                self.callback_fn(code)
         else:
             self.send_response(400)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(b"Authentication failed! Please try again.")
-            self.callback_fn(None)
+            if self.callback_fn:
+                self.callback_fn(None)
 
 def create_callback_handler(callback_fn):
     """Create a callback handler with the specified callback function"""
-    return lambda *args, **kwargs: CallbackHandler(*args, callback_fn=callback_fn, **kwargs)
+    class CustomHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            # Parse query parameters
+            query = parse_qs(urlparse(self.path).query)
+            
+            # Extract code or error
+            if 'code' in query:
+                code = query['code'][0]
+                logger.info(f"Authentication code received {code}")
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b"Authentication successful! You can close this window.")
+                callback_fn(code)
+            else:
+                self.send_response(400)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b"Authentication failed! Please try again.")
+                callback_fn(None)
+    
+    return CustomHandler
 
 class UpstoxAuthenticator:
     """Handles authentication with Upstox API"""
@@ -68,7 +94,7 @@ class UpstoxAuthenticator:
     
     def _load_tokens(self) -> bool:
         """Load saved tokens from file if available"""
-        token_file = os.path.expanduser(".upstox_tokens.json")
+        token_file = os.path.expanduser("~/.upstox_tokens.json")
         
         if os.path.exists(token_file):
             try:
@@ -80,11 +106,19 @@ class UpstoxAuthenticator:
                 self.token_expiry = token_data.get('expiry', 0)
                 
                 # Check if token is still valid
-                if self.token_expiry > time.time() + 60:
+                is_valid = self.token_expiry > time.time() + 60
+                if is_valid:
                     logger.info("Loaded valid tokens from file")
-                    return True
                 else:
                     logger.info("Loaded tokens are expired")
+                    
+                # Debug log token details
+                logger.debug(f"Token details - Access: {self.access_token is not None}, " +
+                            f"Refresh: {self.refresh_token is not None}, " +
+                            f"Expiry: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.token_expiry))}, " +
+                            f"Current: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
+                            
+                return is_valid
             except Exception as e:
                 logger.error(f"Error loading tokens: {e}")
         
@@ -92,7 +126,7 @@ class UpstoxAuthenticator:
     
     def _save_tokens(self) -> None:
         """Save tokens to file for later use"""
-        token_file = os.path.expanduser(".upstox_tokens.json")
+        token_file = os.path.expanduser("~/.upstox_tokens.json")
         
         token_data = {
             'access_token': self.access_token,
@@ -107,34 +141,52 @@ class UpstoxAuthenticator:
             # Set permissions to restrict access
             os.chmod(token_file, 0o600)
             logger.info("Saved tokens to file")
+            
+            # Debug log token details after save
+            logger.debug(f"Saved token details - Access: {self.access_token is not None}, " +
+                        f"Refresh: {self.refresh_token is not None}, " +
+                        f"Expiry: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.token_expiry))}, " +
+                        f"Current: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
         except Exception as e:
             logger.error(f"Error saving tokens: {e}")
     
     def is_authenticated(self) -> bool:
         """Check if user is authenticated with valid tokens"""
         # Check if we have a token and it's not expired
-        return (
+        is_valid = (
             self.access_token is not None and 
             self.token_expiry > time.time() + 60
         )
+        
+        # Debug log authentication status
+        logger.debug(f"Authentication check: {is_valid} - " +
+                    f"Access: {self.access_token is not None}, " +
+                    f"Expiry: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.token_expiry)) if self.token_expiry else 'None'}, " +
+                    f"Current: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
+        
+        return is_valid
     
     def authenticate(self) -> bool:
         """Perform OAuth authentication flow"""
         # If already authenticated, return True
         if self.is_authenticated():
+            logger.info("Already authenticated, skipping authentication flow")
             return True
         
         # Try to refresh token if we have one
         if self.refresh_token:
+            logger.info("Attempting to refresh token")
             if self._refresh_access_token():
                 return True
         
         # Otherwise, initiate OAuth flow
+        logger.info("Starting OAuth flow")
         return self._oauth_flow()
     
     def _refresh_access_token(self, max_retries=3) -> bool:
         """Refresh the access token using the refresh token"""
         if not self.refresh_token:
+            logger.warning("No refresh token available")
             return False
         
         retries = 0
@@ -147,7 +199,17 @@ class UpstoxAuthenticator:
                     'grant_type': 'refresh_token'
                 }
                 
-                response = requests.post(self.TOKEN_URL, data=data)
+                headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json'
+                }
+                
+                logger.debug(f"Making refresh token request to {self.TOKEN_URL}")
+                response = requests.post(
+                    self.TOKEN_URL, 
+                    data=data,
+                    headers=headers
+                )
                 
                 if response.status_code == 200:
                     token_data = response.json()
@@ -167,30 +229,27 @@ class UpstoxAuthenticator:
                     return True
                 elif response.status_code == 401:
                     # Invalid refresh token - can't recover
-                    logger.error("Refresh token is invalid. Re-authentication required.")
+                    logger.error(f"Refresh token is invalid. Re-authentication required. Response: {response.text}")
                     self.refresh_token = None
                     self._save_tokens()  # Save cleared tokens
                     return False
                 else:
                     # Temporary error - can retry
-                    logger.warning(f"Failed to refresh token: {response.text}. Retry {retries+1}/{max_retries}")
+                    logger.warning(f"Failed to refresh token: {response.status_code} - {response.text}. Retry {retries+1}/{max_retries}")
                     retries += 1
                     time.sleep(1)  # Wait before retrying
-            except (requests.RequestException, ConnectionError) as e:
-                # Network error - can retry
-                logger.warning(f"Network error refreshing token: {e}. Retry {retries+1}/{max_retries}")
+            except Exception as e:
+                # Network error or other exception - can retry
+                logger.warning(f"Error refreshing token: {str(e)}. Retry {retries+1}/{max_retries}")
                 retries += 1
                 time.sleep(2)  # Longer wait for network issues
-            except Exception as e:
-                logger.error(f"Unexpected error refreshing token: {e}")
-                return False
-        
+            
         logger.error(f"Failed to refresh token after {max_retries} attempts")
         return False
     
     def _oauth_flow(self) -> bool:
         """Initiate OAuth authentication flow"""
-        # Generate auth URL
+        # Generate auth URL with required parameters
         auth_url = f"{self.AUTH_URL}?client_id={self.api_key}&redirect_uri={self.redirect_uri}&response_type=code"
         
         # Open browser for user to authenticate
@@ -240,21 +299,47 @@ class UpstoxAuthenticator:
                 'grant_type': 'authorization_code'
             }
             
-            response = requests.post(self.TOKEN_URL, data=data)
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json'
+            }
+            
+            logger.debug(f"Exchanging code for token at {self.TOKEN_URL}")
+            response = requests.post(
+                self.TOKEN_URL,
+                data=data,
+                headers=headers
+            )
             
             if response.status_code == 200:
                 token_data = response.json()
+                
+                # Log token details (without exposing the actual token)
+                logger.debug(f"Token response keys: {token_data.keys()}")
+                
                 self.access_token = token_data.get('access_token')
                 self.refresh_token = token_data.get('refresh_token')
-                self.token_expiry = time.time() + token_data.get('expires_in', 0)
+                
+                # Check if expires_in was provided, default to 1 day (86400 seconds) if not
+                expires_in = token_data.get('expires_in', 86400)
+                self.token_expiry = time.time() + expires_in
+                
+                # Log the expiry time
+                expiry_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.token_expiry))
+                logger.debug(f"Token will expire at {expiry_time}, expires_in={expires_in}")
                 
                 # Save tokens
                 self._save_tokens()
                 
                 logger.info("Successfully obtained access token")
+                
+                # Verify token was properly saved
+                auth_status = self.is_authenticated()
+                logger.info(f"Post-exchange authentication status: {auth_status}")
+                
                 return True
             else:
-                logger.error(f"Failed to obtain token: {response.text}")
+                logger.error(f"Failed to obtain token: {response.status_code} - {response.text}")
                 return False
         except Exception as e:
             logger.error(f"Error exchanging code for token: {e}")
@@ -267,5 +352,6 @@ class UpstoxAuthenticator:
         
         return {
             'Authorization': f'Bearer {self.access_token}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
         }

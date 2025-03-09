@@ -5,6 +5,7 @@ Main application UI
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Tab, TabPane, TabbedContent
 from textual.css.query import NoMatches
+import time
 
 from src.auth.authenticator import UpstoxAuthenticator
 from src.api.upstox_client import UpstoxClient
@@ -34,17 +35,22 @@ class TradingApp(App):
         # Load configuration
         self.config = load_config()
         
-        # Initialize components
-        self.authenticator = UpstoxAuthenticator(
-            api_key=self.config["API_KEY"],
-            api_secret=self.config["API_SECRET"],
-            redirect_uri=self.config["REDIRECT_URI"]
-        )
-        
+        # Initialize authenticator
+        self.authenticator = None
         self.client = None
         self.order_manager = None
         self.position_tracker = None
         self.initialized = False
+        
+        # Initialize authenticator separately to handle any errors cleanly
+        try:
+            self.authenticator = UpstoxAuthenticator(
+                api_key=self.config["API_KEY"],
+                api_secret=self.config["API_SECRET"],
+                redirect_uri=self.config["REDIRECT_URI"]
+            )
+        except Exception as e:
+            logger.error(f"Error initializing authenticator: {e}")
     
     def compose(self) -> ComposeResult:
         """Compose the initial UI"""
@@ -72,7 +78,27 @@ class TradingApp(App):
     def on_auth_screen_authenticated(self) -> None:
         """Handle authentication success"""
         try:
-            # Initialize API client
+            if not self.authenticator:
+                logger.error("Authenticator not initialized")
+                return
+                
+            # We'll retry the authentication check a few times to ensure it's properly processed
+            max_retries = 3
+            for retry in range(max_retries):
+                if self.authenticator.is_authenticated():
+                    logger.info("Authentication status verified successfully")
+                    break
+                    
+                if retry < max_retries - 1:
+                    logger.warning(f"Authentication verification attempt {retry+1} failed, retrying...")
+                    time.sleep(1)  # Give it a moment and retry
+                else:
+                    logger.error("Failed to verify authentication status after multiple attempts")
+                    return
+                
+            logger.info("Authentication successful, initializing application components")
+            
+            # Initialize API client with the authenticated authenticator
             self.client = UpstoxClient(self.authenticator)
             
             # Move UI updates first
@@ -87,8 +113,14 @@ class TradingApp(App):
             self.order_manager = OrderManager(self.client)
             self.position_tracker = PositionTracker(self.client)
             
-            # Set default values for order manager
-            self.order_manager.set_default_quantity(self.config["DEFAULT_QUANTITY"])
+            # Set default order quantity
+            try:
+                default_quantity = int(self.config.get("DEFAULT_QUANTITY", 1))
+                self.order_manager.set_default_quantity(default_quantity)
+                logger.info(f"Set default order quantity to {default_quantity}")
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error setting default quantity: {e}")
+                self.order_manager.set_default_quantity(1)
             
             # Initialize UI components
             self.query_one(InstrumentSelector).initialize(self.client)
@@ -104,17 +136,39 @@ class TradingApp(App):
             
             # Give the UI a moment to update before starting services
             def start_services():
-                # Setup websocket connection FIRST
-                self.client.connect_websocket()
-                # Wait a short time for WebSocket to initialize
-                def start_monitoring():
-                    # Start position monitoring AFTER WebSocket is connected
-                    self.position_tracker.start_monitoring()
-                    self.initialized = True
-                    logger.info("Application fully initialized with services")
+                try:
+                    # First verify API access
+                    logger.info("Testing API access...")
+                    test_response = self.client.get_profile()
+                    if isinstance(test_response, dict) and test_response.get('status') == 'error':
+                        logger.error(f"API access test failed: {test_response.get('message')}")
+                        return
+                    
+                    logger.info("API access test successful")
+                    
+                    # Step 1: Setup WebSocket connection FIRST and wait for it to connect
+                    logger.info("Setting up WebSocket connection...")
+                    self.client.connect_websocket()
+                    
+                    # Step 2: Wait a bit to ensure WebSocket connection is established
+                    def setup_monitoring():
+                        # Step 3: Start position monitoring AFTER WebSocket is connected
+                        logger.info("Starting position monitoring...")
+                        if self.position_tracker.start_monitoring():
+                            # Step 4: Setup live updates for positions
+                            logger.info("Setting up live market data for positions...")
+                            self.position_tracker.setup_live_updates()
+                            
+                            self.initialized = True
+                            logger.info("Application fully initialized with services")
+                        else:
+                            logger.error("Failed to start position monitoring")
+                    
+                    # Schedule position monitoring to start after WebSocket connection
+                    self.set_timer(2.0, setup_monitoring)
                 
-                # Schedule position monitoring to start after WebSocket connection
-                self.set_timer(2.0, start_monitoring)
+                except Exception as e:
+                    logger.error(f"Error initializing services: {e}")
             
             # Delay service start to allow UI to render first
             self.set_timer(0.5, start_services)

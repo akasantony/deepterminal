@@ -11,20 +11,22 @@ import threading
 
 from src.auth.authenticator import UpstoxAuthenticator
 from src.utils.logger import logger
+from src.trading.websocket import UpstoxWebSocket  # Import the new WebSocket implementation
 
 class UpstoxClient:
     """Client for interacting with Upstox API"""
     
     BASE_URL = "https://api.upstox.com/v2"
-    WS_URL = "wss://api.upstox.com/v2/feed/market-data/socket"
     
     def __init__(self, authenticator: UpstoxAuthenticator):
         """Initialize with an authenticator"""
         self.authenticator = authenticator
-        self.ws = None
-        self.ws_thread = None
-        self.ws_callbacks = {}
+        self.ws = UpstoxWebSocket(authenticator)  # Initialize the WebSocket client
         self.ws_connected = False
+        
+        # Verify authentication
+        if not self.authenticator.is_authenticated():
+            logger.warning("Authenticator not initialized with valid tokens")
     
     def _get_headers(self) -> Dict[str, str]:
         """Get authenticated headers for API requests"""
@@ -33,9 +35,17 @@ class UpstoxClient:
     def _make_request(self, method: str, endpoint: str, params: Dict = None, data: Dict = None) -> Dict:
         """Make an authenticated request to the Upstox API"""
         url = f"{self.BASE_URL}/{endpoint}"
-        headers = self._get_headers()
         
         try:
+            # Ensure the authenticator is authenticated
+            if not self.authenticator.is_authenticated():
+                if not self.authenticator.authenticate():
+                    return {"status": "error", "message": "Failed to authenticate"}
+            
+            headers = self._get_headers()
+            
+            logger.debug(f"Making {method} request to {url}")
+            
             if method.upper() == 'GET':
                 response = requests.get(url, headers=headers, params=params)
             elif method.upper() == 'POST':
@@ -49,10 +59,19 @@ class UpstoxClient:
             
             # Handle API response
             if response.status_code in (200, 201):
-                return response.json()
+                response_data = response.json()
+                logger.debug(f"API response: {response.status_code}")
+                return response_data
             else:
                 logger.error(f"API request failed: {response.status_code} - {response.text}")
-                return {"status": "error", "code": response.status_code, "message": response.text}
+                # Check if authentication failed
+                if response.status_code == 401:
+                    # Try to reauthenticate
+                    logger.info("Authentication token may have expired, attempting to refresh")
+                    if self.authenticator.authenticate():
+                        # Retry the request with new token
+                        return self._make_request(method, endpoint, params, data)
+                return {"status": "error", "message": response.text}
                 
         except Exception as e:
             logger.error(f"Error making API request: {e}")
@@ -68,27 +87,48 @@ class UpstoxClient:
     
     def get_positions(self) -> Dict:
         """Get current positions"""
-        return self._make_request('GET', 'portfolio/positions')
+        # Updated endpoint as per Upstox API v2
+        return self._make_request('GET', 'portfolio/short-term-positions')
     
     def get_holdings(self) -> Dict:
         """Get current holdings"""
-        return self._make_request('GET', 'portfolio/holdings')
+        return self._make_request('GET', 'portfolio/long-term-holdings')
     
     def search_instruments(self, exchange: str, symbol: str = None, name: str = None) -> List[Dict]:
         """Search for instruments by symbol or name"""
-        params = {"exchange": exchange}
-        
+        # Create a proper search query
         if symbol:
-            params["symbol"] = symbol
-        if name:
-            params["name"] = name
+            search_query = symbol
+        elif name:
+            search_query = name
+        else:
+            search_query = ""
+        
+        # Updated endpoint and parameters
+        params = {
+            "exchange": exchange,
+            "symbol": search_query
+        }
             
         response = self._make_request('GET', 'market-quote/instruments', params=params)
-        return response.get('data', [])
+        
+        # Process the response - check if data is in the expected format
+        instruments = []
+        if response and isinstance(response, dict):
+            data = response.get('data', [])
+            if isinstance(data, list):
+                instruments = data
+            elif isinstance(data, dict):
+                # Some APIs return data as an object with embedded results
+                for key, value in data.items():
+                    if isinstance(value, list):
+                        instruments.extend(value)
+        
+        return instruments
     
     def get_market_quote(self, instrument_keys: List[str]) -> Dict:
         """Get market quotes for instruments"""
-        params = {"instrument_key": instrument_keys}
+        params = {"instrument_key": ",".join(instrument_keys)}
         return self._make_request('GET', 'market-quote/quotes', params=params)
     
     def get_ohlc(self, instrument_key: str, interval: str, from_date: str, to_date: str) -> Dict:
@@ -99,7 +139,7 @@ class UpstoxClient:
             "from": from_date,
             "to": to_date
         }
-        return self._make_request('GET', 'historical-candle/intraday', params=params)
+        return self._make_request('GET', 'historical-candle/data', params=params)
     
     def place_order(self, transaction_type: str, exchange: str, symbol: str, 
                    quantity: int, product: str, order_type: str, 
@@ -149,115 +189,34 @@ class UpstoxClient:
     
     def get_order_book(self) -> Dict:
         """Get the order book"""
-        return self._make_request('GET', 'order/book')
+        return self._make_request('GET', 'order/get-orders')
     
     def get_trade_book(self) -> Dict:
         """Get the trade book"""
-        return self._make_request('GET', 'trade/book')
+        return self._make_request('GET', 'order/trades')
     
     # WebSocket methods for live market data
     
-    def _on_ws_message(self, ws, message):
-        """Handle incoming WebSocket messages"""
-        try:
-            data = json.loads(message)
-            feed_type = data.get('type')
-            
-            # Handle authentication response
-            if feed_type == 'authenticate':
-                if data.get('status') == 'success':
-                    logger.info("WebSocket authentication successful")
-                else:
-                    logger.error(f"WebSocket authentication failed: {data.get('message')}")
-            
-            # Call registered callbacks for this feed type
-            if feed_type in self.ws_callbacks:
-                for callback in self.ws_callbacks[feed_type]:
-                    callback(data)
-                    
-        except Exception as e:
-            logger.error(f"Error processing WebSocket message: {e}")
-
-
-    def _on_ws_error(self, ws, error):
-        """Handle WebSocket errors"""
-        logger.error(f"WebSocket error: {error}")
-    
-    def _on_ws_close(self, ws, close_status_code, close_msg):
-        """Handle WebSocket connection close"""
-        logger.info(f"WebSocket connection closed: {close_status_code} - {close_msg}")
-        self.ws_connected = False
-    
-    def _on_ws_open(self, ws):
-        """Handle WebSocket connection open"""
-        logger.info("WebSocket connection established")
-        self.ws_connected = True
-        
-        # Authenticate the WebSocket connection
-        auth_data = {"type": "authenticate", "token": self.authenticator.access_token}
-        ws.send(json.dumps(auth_data))
-        # Add a small delay before sending subsequent messages
-        time.sleep(0.5)
-    
-    def _run_websocket(self):
-        """Run WebSocket connection in a loop with auto-reconnect"""
-        while True:
-            try:
-                # Create WebSocket connection
-                self.ws = websocket.WebSocketApp(
-                    self.WS_URL,
-                    on_open=self._on_ws_open,
-                    on_message=self._on_ws_message,
-                    on_error=self._on_ws_error,
-                    on_close=self._on_ws_close
-                )
-                
-                # Run WebSocket connection
-                self.ws.run_forever()
-                
-                # If connection closed, wait before reconnecting
-                if not self.ws_connected:
-                    time.sleep(5)
-            except Exception as e:
-                logger.error(f"WebSocket error: {e}")
-                time.sleep(5)
-    
-    def connect_websocket(self):
+    def connect_websocket(self) -> bool:
         """Connect to the WebSocket feed"""
-        if self.ws_thread is None or not self.ws_thread.is_alive():
-            self.ws_thread = threading.Thread(target=self._run_websocket)
-            self.ws_thread.daemon = True
-            self.ws_thread.start()
+        success = self.ws.connect()
+        self.ws_connected = success
+        return success
     
-    def subscribe_feeds(self, instrument_keys: List[str], feed_type: str = "full"):
+    def subscribe_feeds(self, instrument_keys: List[str], feed_type: str = "full") -> bool:
         """Subscribe to market data feeds for specified instruments"""
         if not self.ws_connected:
             logger.warning("WebSocket not connected. Attempting to connect.")
-            self.connect_websocket()
-            # Wait for connection to establish
-            time.sleep(2)
+            if not self.connect_websocket():
+                logger.error("WebSocket connection failed. Cannot subscribe to feeds.")
+                return False
         
-        if not self.ws_connected:
-            logger.error("WebSocket connection failed. Cannot subscribe to feeds.")
-            return
-        
-        # Subscribe to feeds
-        subscribe_data = {
-            "type": "subscribe",
-            "instruments": instrument_keys,
-            "feed_type": feed_type
-        }
-        
-        self.ws.send(json.dumps(subscribe_data))
+        return self.ws.subscribe(instrument_keys, feed_type)
     
     def register_callback(self, feed_type: str, callback):
         """Register a callback function for a specific feed type"""
-        if feed_type not in self.ws_callbacks:
-            self.ws_callbacks[feed_type] = []
-            
-        self.ws_callbacks[feed_type].append(callback)
+        self.ws.register_callback(feed_type, callback)
     
     def unregister_callback(self, feed_type: str, callback):
         """Unregister a callback function for a specific feed type"""
-        if feed_type in self.ws_callbacks and callback in self.ws_callbacks[feed_type]:
-            self.ws_callbacks[feed_type].remove(callback)
+        self.ws.unregister_callback(feed_type, callback)

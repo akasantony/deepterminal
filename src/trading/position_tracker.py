@@ -26,6 +26,12 @@ class PositionTracker:
     
     def fetch_positions(self) -> List[Position]:
         """Fetch current positions from API"""
+        # Ensure client is authenticated before making the request
+        if not self.client.authenticator.is_authenticated():
+            if not self.client.authenticator.authenticate():
+                logger.error("Cannot fetch positions: Authentication failed")
+                return []
+        
         response = self.client.get_positions()
         
         if response.get('status') == 'error':
@@ -33,21 +39,55 @@ class PositionTracker:
             return []
         
         positions = []
-        for position_data in response.get('data', []):
-            position = Position.from_api_response(position_data)
-            
-            # Only store/return non-zero positions unless already tracking
-            if position.quantity != 0 or position.instrument_key in self.positions:
-                self.positions[position.instrument_key] = position
-                positions.append(position)
+        
+        # Handle the new response format for positions
+        data = response.get('data', {})
+        positions_data = []
+        
+        # Check if the data is in the expected format
+        if isinstance(data, dict):
+            # For the new API format that might return categories of positions
+            if 'short_term_positions' in data:
+                positions_data.extend(data['short_term_positions'])
+            elif 'day_positions' in data:
+                positions_data.extend(data['day_positions'])
+            elif 'holdings' in data:
+                positions_data.extend(data['holdings'])
+            # If positions are directly in data
+            elif 'positions' in data:
+                positions_data.extend(data['positions'])
+            # If data itself is the positions list
+            elif len(data) > 0 and isinstance(list(data.values())[0], dict):
+                positions_data.extend(data.values())
+        elif isinstance(data, list):
+            # Direct list of positions
+            positions_data = data
+        
+        for position_data in positions_data:
+            try:
+                position = Position.from_api_response(position_data)
                 
-                # Add to subscribed instruments for live updates
-                if position.quantity != 0 and position.instrument_key not in self.subscribed_instruments:
-                    self.subscribed_instruments.add(position.instrument_key)
-                    try:
-                        self.client.subscribe_feeds([position.instrument_key])
-                    except Exception as e:
-                        logger.error(f"Failed to subscribe to feed: {e}")
+                # Only store/return non-zero positions unless already tracking
+                if position.quantity != 0 or position.instrument_key in self.positions:
+                    self.positions[position.instrument_key] = position
+                    positions.append(position)
+                    
+                    # Add to subscribed instruments for live updates
+                    if position.quantity != 0 and position.instrument_key not in self.subscribed_instruments:
+                        self.subscribed_instruments.add(position.instrument_key)
+                        try:
+                            # Ensure WebSocket is connected before subscribing
+                            if not self.client.ws_connected:
+                                self.client.connect_websocket()
+                                # Give it a moment to connect
+                                time.sleep(1)
+                            
+                            if self.client.ws_connected:
+                                self.client.subscribe_feeds([position.instrument_key])
+                        except Exception as e:
+                            logger.error(f"Failed to subscribe to feed: {e}")
+            except Exception as e:
+                logger.error(f"Error processing position data: {e}")
         
         return positions
     
@@ -70,22 +110,43 @@ class PositionTracker:
         """Register a callback for all position updates"""
         self.global_callbacks.append(callback)
     
-    def start_monitoring(self, refresh_interval: float = 5.0):
+    def start_monitoring(self, refresh_interval: float = 5.0, max_retries: int = 3):
         """Start monitoring positions in a background thread"""
         if self.monitoring:
-            return
+            return True
         
-        # Check authentication first
-        try:
-            # Test API access before starting monitoring
-            test_response = self.client.get_profile()
-            if 'status' in test_response and test_response['status'] == 'error':
-                logger.error(f"Authentication error: {test_response.get('message')}")
-                return
-        except Exception as e:
-            logger.error(f"Unable to start position monitoring - authentication error: {e}")
-            return
-            
+        # Check authentication first - try multiple times if needed
+        for retry in range(max_retries):
+            try:
+                if not self.client.authenticator.is_authenticated():
+                    if not self.client.authenticator.authenticate():
+                        logger.error("Cannot start position monitoring: Authentication failed")
+                        if retry < max_retries - 1:
+                            logger.info(f"Retrying authentication ({retry+1}/{max_retries})")
+                            time.sleep(2)  # Wait before retrying
+                            continue
+                        return False
+                
+                # Test API access before starting monitoring
+                test_response = self.client.get_profile()
+                if isinstance(test_response, dict) and test_response.get('status') == 'error':
+                    logger.error(f"API access test failed: {test_response.get('message')}")
+                    if retry < max_retries - 1:
+                        logger.info(f"Retrying API access test ({retry+1}/{max_retries})")
+                        time.sleep(2)
+                        continue
+                    return False
+                
+                # API access successful, proceed with monitoring
+                break
+            except Exception as e:
+                logger.error(f"Error testing API access: {e}")
+                if retry < max_retries - 1:
+                    logger.info(f"Retrying ({retry+1}/{max_retries})")
+                    time.sleep(2)
+                    continue
+                return False
+                    
         self.monitoring = True
         
         def monitor_loop():
@@ -120,6 +181,7 @@ class PositionTracker:
         self.monitoring_thread = threading.Thread(target=monitor_loop)
         self.monitoring_thread.daemon = True
         self.monitoring_thread.start()
+        return True
     
     def stop_monitoring(self):
         """Stop monitoring positions"""
@@ -129,6 +191,12 @@ class PositionTracker:
     
     def setup_live_updates(self):
         """Setup live market data updates for positions"""
+        # Make sure we're authenticated first
+        if not self.client.authenticator.is_authenticated():
+            if not self.client.authenticator.authenticate():
+                logger.error("Cannot setup live updates: Authentication failed")
+                return False
+        
         # First ensure we have the latest positions
         self.fetch_positions()
         
@@ -172,11 +240,27 @@ class PositionTracker:
         self.client.register_callback('full', on_tick_data)
         self.client.register_callback('ltpc', on_tick_data)
         
+        # First ensure that WebSocket is connected
+        if not self.client.ws_connected:
+            if not self.client.connect_websocket():
+                logger.error("Failed to connect WebSocket")
+                return False
+            # Give it a moment to connect
+            time.sleep(1)
+        
         # Subscribe to feeds for all current positions
         instrument_keys = [pos.instrument_key for pos in self.positions.values() if pos.quantity != 0]
         if instrument_keys:
             try:
-                self.client.subscribe_feeds(instrument_keys)
-                self.subscribed_instruments.update(instrument_keys)
+                success = self.client.subscribe_feeds(instrument_keys)
+                if success:
+                    self.subscribed_instruments.update(instrument_keys)
+                    return True
+                else:
+                    logger.error("Failed to subscribe to position feeds")
+                    return False
             except Exception as e:
                 logger.error(f"Failed to subscribe to position feeds: {e}")
+                return False
+        
+        return True

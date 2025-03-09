@@ -7,7 +7,7 @@ from textual.containers import Horizontal, Vertical, Container, Grid
 from textual.widgets import Button, Input, Label, Static, Select
 from textual.reactive import reactive
 from textual import work
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from src.api.upstox_client import UpstoxClient
 from src.trading.order_manager import OrderManager
@@ -57,13 +57,14 @@ class TradingPanel(Container):
                 # Order entry section
                 with Container(id="order_entry", classes="no_instrument"):
                     with Horizontal(id="order_controls"):
-                        # Using regular tuples format without SelectOption
+                        # Define Select widgets without pre-setting value
                         yield Select(
                             [
-                                ("INTRADAY", "Intraday"),
-                                ("DELIVERY", "Delivery")
+                                ("DELIVERY", "Delivery"),
+                                ("INTRADAY", "Intraday")
                             ],
-                            id="product_type"
+                            id="product_type",
+                            prompt="Product Type"
                         )
                         
                         yield Select(
@@ -73,7 +74,8 @@ class TradingPanel(Container):
                                 ("SL", "Stop Loss"),
                                 ("SL-M", "SL-Market")
                             ],
-                            id="order_type"
+                            id="order_type",
+                            prompt="Order Type"
                         )
                     
                 with Grid(id="order_params", classes="hidden"):
@@ -95,28 +97,24 @@ class TradingPanel(Container):
     
     def on_mount(self) -> None:
         """Setup the widget on mount"""
-        # We'll set these values in a separate call after all widgets are mounted
-        self.call_later(self._set_default_values)
-
-    def _set_default_values(self):
-        """Set default values for widgets after they're fully mounted"""
+        # Set default values for selects after they are mounted
         try:
+            self.set_timer(0.1, self._set_default_values)
+        except Exception as e:
+            logger.error(f"Error setting up on_mount timer: {e}")
+    
+    def _set_default_values(self) -> None:
+        """Set default values for widgets safely"""
+        try:
+            # Set default values for select widgets
             product_type = self.query_one("#product_type", Select)
             order_type = self.query_one("#order_type", Select)
             
-            # Check the available options
-            product_options = [option[0] for option in product_type.options]
-            order_options = [option[0] for option in order_type.options]
+            product_type.value = product_type.options[1][0]  # INTRADAY
+            order_type.value = order_type.options[0][0]     # MARKET
             
-            # Only set if the value is valid
-            if "INTRADAY" in product_options:
-                product_type.value = "INTRADAY"
-            
-            if "MARKET" in order_options:
-                order_type.value = "MARKET"
-                
+            logger.info("Default values set for select widgets")
         except Exception as e:
-            from src.utils.logger import logger
             logger.error(f"Error setting default values: {e}")
     
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -126,44 +124,47 @@ class TradingPanel(Container):
     
     def _on_order_type_change(self, value: str) -> None:
         """Handle order type changes"""
-        # Show/hide price fields based on order type
-        price_label = self.query_one("#price_label")
-        price_input = self.query_one("#price_input")
-        trigger_label = self.query_one("#trigger_label")
-        trigger_input = self.query_one("#trigger_input")
-        
-        if value == "MARKET":
-            price_label.add_class("hidden")
-            price_input.add_class("hidden")
-            trigger_label.add_class("hidden")
-            trigger_input.add_class("hidden")
-        
-        elif value == "LIMIT":
-            price_label.remove_class("hidden")
-            price_input.remove_class("hidden")
-            trigger_label.add_class("hidden")
-            trigger_input.add_class("hidden")
+        try:
+            # Show/hide price fields based on order type
+            price_label = self.query_one("#price_label")
+            price_input = self.query_one("#price_input")
+            trigger_label = self.query_one("#trigger_label")
+            trigger_input = self.query_one("#trigger_input")
             
-            # Set default price to current price if available
-            if self.current_price > 0:
-                price_input.value = str(self.current_price)
-        
-        elif value in ["SL", "SL-M"]:
-            trigger_label.remove_class("hidden")
-            trigger_input.remove_class("hidden")
-            
-            # For SL, also show price input
-            if value == "SL":
-                price_label.remove_class("hidden")
-                price_input.remove_class("hidden")
-            else:
+            if value == "MARKET":
                 price_label.add_class("hidden")
                 price_input.add_class("hidden")
+                trigger_label.add_class("hidden")
+                trigger_input.add_class("hidden")
             
-            # Set default trigger price to current price if available
-            if self.current_price > 0:
-                # For buy, trigger above current, for sell trigger below current
-                trigger_input.value = str(self.current_price)
+            elif value == "LIMIT":
+                price_label.remove_class("hidden")
+                price_input.remove_class("hidden")
+                trigger_label.add_class("hidden")
+                trigger_input.add_class("hidden")
+                
+                # Set default price to current price if available
+                if self.current_price > 0:
+                    price_input.value = f"{self.current_price:.2f}"
+            
+            elif value in ["SL", "SL-M"]:
+                trigger_label.remove_class("hidden")
+                trigger_input.remove_class("hidden")
+                
+                # For SL, also show price input
+                if value == "SL":
+                    price_label.remove_class("hidden")
+                    price_input.remove_class("hidden")
+                else:
+                    price_label.add_class("hidden")
+                    price_input.add_class("hidden")
+                
+                # Set default trigger price to current price if available
+                if self.current_price > 0:
+                    # For buy, trigger above current, for sell trigger below current
+                    trigger_input.value = f"{self.current_price:.2f}"
+        except Exception as e:
+            logger.error(f"Error in _on_order_type_change: {e}")
     
     def set_instrument(self, instrument: Instrument) -> None:
         """Set the current instrument"""
@@ -292,6 +293,12 @@ class TradingPanel(Container):
             # Get order parameters
             product_type = self.query_one("#product_type").value
             order_type = self.query_one("#order_type").value
+            
+            # Validate values
+            if not product_type or not order_type:
+                self.query_one("#order_status").update("Error: Product type or order type not selected")
+                return
+                
             quantity = int(self.query_one("#quantity_input").value)
             
             price = None
