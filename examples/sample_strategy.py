@@ -83,6 +83,15 @@ class RSIStrategy(TradingStrategy):
         
         # Need at least rsi_period + 1 data points to calculate RSI
         if len(prices) <= self.rsi_period:
+            logger.debug(f"Not enough data to calculate RSI for {instrument_key}")
+            return
+        
+        # Calculate price changes
+        deltas = np.diff(prices)
+        
+        # Handle the case where we have no price movements
+        if all(d == 0 for d in deltas):
+            self.rsi_values[instrument_key] = 50  # Neutral RSI when no price movement
             return
         
         # Calculate price changes

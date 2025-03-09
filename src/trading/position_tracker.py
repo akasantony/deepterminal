@@ -75,6 +75,17 @@ class PositionTracker:
         if self.monitoring:
             return
         
+        # Check authentication first
+        try:
+            # Test API access before starting monitoring
+            test_response = self.client.get_profile()
+            if 'status' in test_response and test_response['status'] == 'error':
+                logger.error(f"Authentication error: {test_response.get('message')}")
+                return
+        except Exception as e:
+            logger.error(f"Unable to start position monitoring - authentication error: {e}")
+            return
+            
         self.monitoring = True
         
         def monitor_loop():

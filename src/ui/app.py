@@ -68,27 +68,14 @@ class TradingApp(App):
         """Handle app mount event"""
         # Set dark mode
         self.dark = True
-    
+
     def on_auth_screen_authenticated(self) -> None:
         """Handle authentication success"""
         try:
             # Initialize API client
             self.client = UpstoxClient(self.authenticator)
             
-            # Initialize order manager and position tracker
-            self.order_manager = OrderManager(self.client)
-            self.position_tracker = PositionTracker(self.client)
-            
-            # Start position monitoring
-            self.position_tracker.start_monitoring()
-            
-            # Setup websocket connection
-            self.client.connect_websocket()
-            
-            # Initialize default values for order manager
-            self.order_manager.set_default_quantity(self.config["DEFAULT_QUANTITY"])
-            
-            # Hide auth screen and show main content
+            # Move UI updates first
             try:
                 self.query_one(AuthScreen).add_class("hidden")
                 self.query_one("#main_content").remove_class("hidden")
@@ -96,7 +83,14 @@ class TradingApp(App):
                 logger.error("UI elements not found")
                 return
             
-            # Initialize components with dependencies
+            # Initialize components with dependencies but WAIT before starting services
+            self.order_manager = OrderManager(self.client)
+            self.position_tracker = PositionTracker(self.client)
+            
+            # Set default values for order manager
+            self.order_manager.set_default_quantity(self.config["DEFAULT_QUANTITY"])
+            
+            # Initialize UI components
             self.query_one(InstrumentSelector).initialize(self.client)
             self.query_one(TradingPanel).initialize(
                 client=self.client, 
@@ -108,13 +102,29 @@ class TradingApp(App):
                 position_tracker=self.position_tracker
             )
             
-            self.initialized = True
+            # Give the UI a moment to update before starting services
+            def start_services():
+                # Setup websocket connection FIRST
+                self.client.connect_websocket()
+                # Wait a short time for WebSocket to initialize
+                def start_monitoring():
+                    # Start position monitoring AFTER WebSocket is connected
+                    self.position_tracker.start_monitoring()
+                    self.initialized = True
+                    logger.info("Application fully initialized with services")
+                
+                # Schedule position monitoring to start after WebSocket connection
+                self.set_timer(2.0, start_monitoring)
+            
+            # Delay service start to allow UI to render first
+            self.set_timer(0.5, start_services)
+            
             logger.info("Application initialized successfully")
         
         except Exception as e:
             logger.error(f"Error initializing application: {e}")
             self.exit(message=f"Error: {str(e)}")
-    
+ 
     def on_instrument_selector_instrument_selected(self, message) -> None:
         """Handle instrument selection event"""
         if self.initialized:

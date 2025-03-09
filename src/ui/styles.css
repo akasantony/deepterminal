@@ -1,0 +1,209 @@
+/* DeepTerminal CSS Styles */
+
+/* General Layout */
+Screen {
+    background: #1a1a1a;
+    color: #f0f0f0;
+}
+
+#auth_title {
+    margin: 2 0 2 0;
+    text-align: center;
+    width: 100%;
+    color: #ffffff;
+    background: #111111;
+    padding: 1 0 1 0;
+}
+
+#auth_subtitle {
+    margin: 1 0 1 0;
+    text-align: center;
+    width: 100%;
+}
+
+#login_button {
+    margin: 1 0 1 0;  /* top right bottom left */
+    width: 30%;
+    align: center middle;    /* Center horizontally and vertically */
+}
+
+#auth_status {
+    margin: 1 0 1 0;
+    text-align: center;
+    width: 100%;
+}
+
+#auth_message {
+    margin: 1 0 1 0;
+    text-align: center;
+    width: 100%;
+}
+
+#auth_error {
+    background: #770000;
+    color: #ffffff;
+    margin: 1 0 1 0;
+    text-align: center;
+    width: 100%;
+    padding: 1 0 1 0;
+}
+
+/* Instrument Selector Styles */
+#instrument_search_container {
+    height: 40%;
+    border-bottom: solid green;
+}
+
+#search_controls {
+    height: 3;
+    margin-bottom: 1;
+}
+
+#exchange_select {
+    width: 30%;
+}
+
+#search_input {
+    width: 50%;
+}
+
+#search_button {
+    width: 20%;
+}
+
+#search_results {
+    height: auto;
+}
+
+.status_message {
+    height: 1;
+    color: #ffaa00;
+}
+
+/* Trading Panel Styles */
+#trading_container {
+    height: 60%;
+}
+
+#instrument_info {
+    background: #333333;
+    padding: 1 1 1 1;
+    margin-bottom: 1;
+}
+
+#price_display {
+    margin-top: 1;
+}
+
+.price_label {
+    width: 10%;
+    text-align: right;
+    padding-right: 1;
+}
+
+.price_value {
+    width: 23%;
+    text-align: left;
+}
+
+#ltp_value {
+    color: #ffffff;
+    background: #444444;
+    text-align: center;
+}
+
+#bid_value {
+    color: #00ff00;
+}
+
+#ask_value {
+    color: #ff0000;
+}
+
+#order_entry {
+    padding: 1 1 1 1;
+    height: auto;
+}
+
+#order_controls {
+    height: 3;
+    margin-bottom: 1;
+}
+
+#product_type, #order_type {
+    width: 50%;
+}
+
+#order_params {
+    grid-size: 2;
+    grid-columns: 1fr 3fr;
+    padding: 1 1 1 1;
+    grid-gutter: 1 2;
+}
+
+.order_input {
+    width: 100%;
+}
+
+#order_buttons {
+    height: 3;
+    margin-top: 1;
+}
+
+#buy_button, #sell_button {
+    width: 50%;
+}
+
+#buy_button {
+    background: #006600;
+}
+
+#sell_button {
+    background: #660000;
+}
+
+.order_status {
+    background: #333333;
+    height: 1;
+    margin-top: 1;
+    padding: 0 1 0 1;
+}
+
+/* P&L Display Styles */
+#pnl_container {
+    padding: 1 1 1 1;
+}
+
+#pnl_summary {
+    background: #333333;
+    padding: 1 1 1 1;
+    margin-bottom: 1;
+}
+
+.summary_label, .summary_value {
+    /* Use layout-horizontal instead of display: inline */
+    layout: horizontal;
+}
+
+.summary_value {
+    margin-left: 1;
+    margin-right: 3;
+}
+
+.positive {
+    color: #00ff00;
+}
+
+.negative {
+    color: #ff0000;
+}
+
+/* Utility Classes */
+.hidden {
+    display: none;
+}
+
+.no_instrument {
+    text-align: center;
+    padding: 2 2 2 2;
+}

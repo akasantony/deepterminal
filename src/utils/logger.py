@@ -36,4 +36,4 @@ def setup_logger(log_level: str = "INFO", log_file: Optional[str] = None) -> log
     return logger
 
 # Create a default logger
-logger = setup_logger()
+logger = setup_logger(log_file="logs/trading.log")

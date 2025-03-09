@@ -54,18 +54,27 @@ class TradingPanel(Container):
                     yield Static("Ask:", classes="price_label")
                     yield Static("0.00", id="ask_value", classes="price_value")
             
-            # Order entry section
-            with Container(id="order_entry", classes="no_instrument"):
-                with Horizontal(id="order_controls"):
-                    yield Select(
-                        [("INTRADAY", "Intraday"), ("DELIVERY", "Delivery")],
-                        id="product_type"
-                    )
-                    
-                    yield Select(
-                        [("MARKET", "Market"), ("LIMIT", "Limit"), ("SL", "Stop Loss"), ("SL-M", "SL-Market")],
-                        id="order_type"
-                    )
+                # Order entry section
+                with Container(id="order_entry", classes="no_instrument"):
+                    with Horizontal(id="order_controls"):
+                        # Using regular tuples format without SelectOption
+                        yield Select(
+                            [
+                                ("INTRADAY", "Intraday"),
+                                ("DELIVERY", "Delivery")
+                            ],
+                            id="product_type"
+                        )
+                        
+                        yield Select(
+                            [
+                                ("MARKET", "Market"),
+                                ("LIMIT", "Limit"),
+                                ("SL", "Stop Loss"),
+                                ("SL-M", "SL-Market")
+                            ],
+                            id="order_type"
+                        )
                     
                 with Grid(id="order_params", classes="hidden"):
                     yield Label("Quantity:")
@@ -86,15 +95,26 @@ class TradingPanel(Container):
     
     def on_mount(self) -> None:
         """Setup the widget on mount"""
-        # Set default values
-        product_type = self.query_one("#product_type")
-        order_type = self.query_one("#order_type")
-        
-        # Set default values after mount
+        # We'll set these values in a separate call after all widgets are mounted
+        self.call_later(self._set_default_values)
+
+    def _set_default_values(self):
+        """Set default values for widgets after they're fully mounted"""
         try:
-            # Try to set default values
-            product_type.value = "INTRADAY"
-            order_type.value = "MARKET"
+            product_type = self.query_one("#product_type", Select)
+            order_type = self.query_one("#order_type", Select)
+            
+            # Check the available options
+            product_options = [option[0] for option in product_type.options]
+            order_options = [option[0] for option in order_type.options]
+            
+            # Only set if the value is valid
+            if "INTRADAY" in product_options:
+                product_type.value = "INTRADAY"
+            
+            if "MARKET" in order_options:
+                order_type.value = "MARKET"
+                
         except Exception as e:
             from src.utils.logger import logger
             logger.error(f"Error setting default values: {e}")
@@ -169,33 +189,88 @@ class TradingPanel(Container):
         self.query_one("#buy_button").disabled = False
         self.query_one("#sell_button").disabled = False
         
+        # Reset price displays
+        self.query_one("#ltp_value").update("Loading...")
+        self.query_one("#bid_value").update("Loading...")
+        self.query_one("#ask_value").update("Loading...")
+        
         # Subscribe to market data
         if self.client:
             try:
+                # Unsubscribe from previous feeds if any
+                self._unsubscribe_from_previous_feeds()
+                
+                # Subscribe to new instrument feed
                 self.client.subscribe_feeds([instrument.instrument_key])
                 self.client.register_callback('full', self._on_market_data)
                 self.client.register_callback('ltpc', self._on_market_data)
+                
+                # Set a timeout to check if we received data
+                self._start_market_data_timeout()
             except Exception as e:
                 logger.error(f"Error subscribing to market data: {e}")
-                self.query_one("#order_status").update(f"Error: {str(e)}")
-    
+                self.query_one("#order_status").update(f"Error: Could not subscribe to market data")
+                self.query_one("#ltp_value").update("ERROR")
+                self.query_one("#bid_value").update("ERROR")
+                self.query_one("#ask_value").update("ERROR")
+
+    def _unsubscribe_from_previous_feeds(self):
+        """Unsubscribe from previous market data feeds"""
+        # This would depend on the actual API implementation
+        # If upstox client supports unsubscribing, implement it here
+        pass
+
+    def _start_market_data_timeout(self):
+        """Start a timeout to check if market data was received"""
+        import threading
+        
+        def check_data_received():
+            # If after 5 seconds we still have default prices, show error
+            if self.current_price == 0.0:
+                self.app.call_from_thread(self._handle_market_data_timeout)
+        
+        # Start a timer to check if data was received
+        timer = threading.Timer(5.0, check_data_received)
+        timer.daemon = True
+        timer.start()
+
+    def _handle_market_data_timeout(self):
+        """Handle case where market data wasn't received"""
+        if self.current_price == 0.0:
+            self.query_one("#ltp_value").update("NO DATA")
+            self.query_one("#bid_value").update("NO DATA")
+            self.query_one("#ask_value").update("NO DATA")
+            self.query_one("#order_status").update("Warning: No market data received")
+
     def _on_market_data(self, data: dict) -> None:
         """Handle market data updates"""
-        if not self.instrument or data.get('instrument_key') != self.instrument.instrument_key:
+        if not self.instrument:
+            return
+            
+        if data.get('instrument_key') != self.instrument.instrument_key:
             return
         
-        # Update prices if available in data
-        if 'ltp' in data:
-            self.current_price = float(data['ltp'])
-            self.query_one("#ltp_value").update(f"{self.current_price:.2f}")
-        
-        if 'bid' in data:
-            self.bid_price = float(data['bid'])
-            self.query_one("#bid_value").update(f"{self.bid_price:.2f}")
-        
-        if 'ask' in data:
-            self.ask_price = float(data['ask'])
-            self.query_one("#ask_value").update(f"{self.ask_price:.2f}")
+        try:
+            # Update prices if available in data
+            if 'ltp' in data and data['ltp'] is not None:
+                self.current_price = float(data['ltp'])
+                self.query_one("#ltp_value").update(f"{self.current_price:.2f}")
+                
+                # Also update the price input if it's visible and hasn't been modified
+                price_input = self.query_one("#price_input")
+                if not price_input.has_class("hidden") and float(price_input.value) == 0.0:
+                    price_input.value = f"{self.current_price:.2f}"
+            
+            if 'bid' in data and data['bid'] is not None:
+                self.bid_price = float(data['bid'])
+                self.query_one("#bid_value").update(f"{self.bid_price:.2f}")
+            
+            if 'ask' in data and data['ask'] is not None:
+                self.ask_price = float(data['ask'])
+                self.query_one("#ask_value").update(f"{self.ask_price:.2f}")
+                
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error processing market data: {e}, data: {data}")
     
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button press event"""

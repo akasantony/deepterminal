@@ -163,6 +163,13 @@ class UpstoxClient:
             data = json.loads(message)
             feed_type = data.get('type')
             
+            # Handle authentication response
+            if feed_type == 'authenticate':
+                if data.get('status') == 'success':
+                    logger.info("WebSocket authentication successful")
+                else:
+                    logger.error(f"WebSocket authentication failed: {data.get('message')}")
+            
             # Call registered callbacks for this feed type
             if feed_type in self.ws_callbacks:
                 for callback in self.ws_callbacks[feed_type]:
@@ -170,7 +177,8 @@ class UpstoxClient:
                     
         except Exception as e:
             logger.error(f"Error processing WebSocket message: {e}")
-    
+
+
     def _on_ws_error(self, ws, error):
         """Handle WebSocket errors"""
         logger.error(f"WebSocket error: {error}")
@@ -188,6 +196,8 @@ class UpstoxClient:
         # Authenticate the WebSocket connection
         auth_data = {"type": "authenticate", "token": self.authenticator.access_token}
         ws.send(json.dumps(auth_data))
+        # Add a small delay before sending subsequent messages
+        time.sleep(0.5)
     
     def _run_websocket(self):
         """Run WebSocket connection in a loop with auto-reconnect"""

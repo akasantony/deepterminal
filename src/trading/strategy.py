@@ -24,6 +24,7 @@ class TradingStrategy(ABC):
         self.instruments: Dict[str, Instrument] = {}
         self.is_running = False
         self.strategy_params: Dict[str, Any] = {}
+        self._registered_callbacks = []  # Track registered callbacks for cleanup
     
     def set_instruments(self, instruments: List[Instrument]):
         """Set the instruments to trade"""
@@ -43,25 +44,80 @@ class TradingStrategy(ABC):
             return
         
         self.is_running = True
-        self.initialize()
         
-        # Register for position updates
-        for instrument_key in self.instruments:
-            self.position_tracker.register_position_callback(instrument_key, self.on_position_update)
-        
-        # Register for market data updates
-        self.setup_market_data_subscriptions()
-        
-        # Initialize with current positions
-        positions = self.position_tracker.fetch_positions()
-        for position in positions:
-            if position.instrument_key in self.instruments:
-                self.on_position_update(position)
+        try:
+            # Initialize strategy
+            self.initialize()
+            
+            # Register for position updates
+            for instrument_key in self.instruments:
+                self.position_tracker.register_position_callback(
+                    instrument_key, self.on_position_update
+                )
+                # Track callback registration
+                self._registered_callbacks.append({
+                    'type': 'position',
+                    'instrument_key': instrument_key
+                })
+            
+            # Register for market data updates
+            self.setup_market_data_subscriptions()
+            
+            # Initialize with current positions
+            positions = self.position_tracker.fetch_positions()
+            for position in positions:
+                if position.instrument_key in self.instruments:
+                    self.on_position_update(position)
+                    
+            from src.utils.logger import logger
+            logger.info(f"Strategy started: {self.__class__.__name__}")
+        except Exception as e:
+            from src.utils.logger import logger
+            logger.error(f"Error starting strategy: {e}")
+            self.stop()  # Cleanup resources if initialization fails
     
     def stop(self):
         """Stop the strategy"""
-        self.is_running = False
-        self.cleanup()
+        if not self.is_running:
+            return
+            
+        try:
+            # Unregister callbacks
+            self._unregister_callbacks()
+            
+            # Run custom cleanup
+            self.cleanup()
+            
+            self.is_running = False
+            from src.utils.logger import logger
+            logger.info(f"Strategy stopped: {self.__class__.__name__}")
+        except Exception as e:
+            from src.utils.logger import logger
+            logger.error(f"Error stopping strategy: {e}")
+    
+    def _unregister_callbacks(self):
+        """Unregister all callbacks"""
+        from src.utils.logger import logger
+        
+        # Unregister position callbacks
+        for callback_info in self._registered_callbacks:
+            if callback_info['type'] == 'position':
+                try:
+                    self.position_tracker.position_callbacks[callback_info['instrument_key']].remove(
+                        self.on_position_update
+                    )
+                except (KeyError, ValueError):
+                    pass
+                    
+        # Unregister market data callbacks
+        try:
+            self.client.unregister_callback('full', self.on_tick_data)
+            self.client.unregister_callback('ltpc', self.on_tick_data)
+        except Exception as e:
+            logger.error(f"Error unregistering market data callbacks: {e}")
+            
+        # Clear callback tracking
+        self._registered_callbacks = []
     
     def setup_market_data_subscriptions(self):
         """Set up market data subscriptions"""
@@ -73,6 +129,16 @@ class TradingStrategy(ABC):
                 # Register callbacks for tick data
                 self.client.register_callback('full', self.on_tick_data)
                 self.client.register_callback('ltpc', self.on_tick_data)
+                
+                # Track callback registration
+                self._registered_callbacks.append({
+                    'type': 'market_data',
+                    'feed_type': 'full'
+                })
+                self._registered_callbacks.append({
+                    'type': 'market_data',
+                    'feed_type': 'ltpc'
+                })
             except Exception as e:
                 from src.utils.logger import logger
                 logger.error(f"Failed to setup market data subscriptions: {e}")

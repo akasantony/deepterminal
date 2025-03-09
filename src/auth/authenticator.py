@@ -68,7 +68,7 @@ class UpstoxAuthenticator:
     
     def _load_tokens(self) -> bool:
         """Load saved tokens from file if available"""
-        token_file = os.path.expanduser("~/.upstox_tokens.json")
+        token_file = os.path.expanduser(".upstox_tokens.json")
         
         if os.path.exists(token_file):
             try:
@@ -92,7 +92,7 @@ class UpstoxAuthenticator:
     
     def _save_tokens(self) -> None:
         """Save tokens to file for later use"""
-        token_file = os.path.expanduser("~/.upstox_tokens.json")
+        token_file = os.path.expanduser(".upstox_tokens.json")
         
         token_data = {
             'access_token': self.access_token,
@@ -132,37 +132,61 @@ class UpstoxAuthenticator:
         # Otherwise, initiate OAuth flow
         return self._oauth_flow()
     
-    def _refresh_access_token(self) -> bool:
+    def _refresh_access_token(self, max_retries=3) -> bool:
         """Refresh the access token using the refresh token"""
         if not self.refresh_token:
             return False
         
-        try:
-            data = {
-                'client_id': self.api_key,
-                'client_secret': self.api_secret,
-                'refresh_token': self.refresh_token,
-                'grant_type': 'refresh_token'
-            }
-            
-            response = requests.post(self.TOKEN_URL, data=data)
-            
-            if response.status_code == 200:
-                token_data = response.json()
-                self.access_token = token_data.get('access_token')
-                self.token_expiry = time.time() + token_data.get('expires_in', 0)
+        retries = 0
+        while retries < max_retries:
+            try:
+                data = {
+                    'client_id': self.api_key,
+                    'client_secret': self.api_secret,
+                    'refresh_token': self.refresh_token,
+                    'grant_type': 'refresh_token'
+                }
                 
-                # Save updated tokens
-                self._save_tokens()
+                response = requests.post(self.TOKEN_URL, data=data)
                 
-                logger.info("Successfully refreshed access token")
-                return True
-            else:
-                logger.error(f"Failed to refresh token: {response.text}")
+                if response.status_code == 200:
+                    token_data = response.json()
+                    self.access_token = token_data.get('access_token')
+                    
+                    # Check if we got a new refresh token too
+                    new_refresh_token = token_data.get('refresh_token')
+                    if new_refresh_token:
+                        self.refresh_token = new_refresh_token
+                    
+                    self.token_expiry = time.time() + token_data.get('expires_in', 0)
+                    
+                    # Save updated tokens
+                    self._save_tokens()
+                    
+                    logger.info("Successfully refreshed access token")
+                    return True
+                elif response.status_code == 401:
+                    # Invalid refresh token - can't recover
+                    logger.error("Refresh token is invalid. Re-authentication required.")
+                    self.refresh_token = None
+                    self._save_tokens()  # Save cleared tokens
+                    return False
+                else:
+                    # Temporary error - can retry
+                    logger.warning(f"Failed to refresh token: {response.text}. Retry {retries+1}/{max_retries}")
+                    retries += 1
+                    time.sleep(1)  # Wait before retrying
+            except (requests.RequestException, ConnectionError) as e:
+                # Network error - can retry
+                logger.warning(f"Network error refreshing token: {e}. Retry {retries+1}/{max_retries}")
+                retries += 1
+                time.sleep(2)  # Longer wait for network issues
+            except Exception as e:
+                logger.error(f"Unexpected error refreshing token: {e}")
                 return False
-        except Exception as e:
-            logger.error(f"Error refreshing token: {e}")
-            return False
+        
+        logger.error(f"Failed to refresh token after {max_retries} attempts")
+        return False
     
     def _oauth_flow(self) -> bool:
         """Initiate OAuth authentication flow"""

@@ -27,6 +27,9 @@ def find_dotenv() -> str:
 
 def load_config() -> Dict[str, Any]:
     """Load configuration from environment variables"""
+    from src.utils.config_validator import validate_config, ConfigError
+    from src.utils.logger import logger 
+    
     # Load environment variables from .env file
     dotenv_path = find_dotenv()
     load_dotenv(dotenv_path)
@@ -43,8 +46,25 @@ def load_config() -> Dict[str, Any]:
         "DEFAULT_EXCHANGE": os.getenv("DEFAULT_EXCHANGE", "NSE"),
         
         # Trading parameters
-        "DEFAULT_QUANTITY": int(os.getenv("DEFAULT_QUANTITY", "1")),
-        "RISK_PERCENTAGE": float(os.getenv("RISK_PERCENTAGE", "2.0")),
+        "DEFAULT_QUANTITY": os.getenv("DEFAULT_QUANTITY", "1"),
+        "RISK_PERCENTAGE": os.getenv("RISK_PERCENTAGE", "2.0"),
     }
     
-    return config
+    try:
+        # Validate configuration
+        config = validate_config(config)
+        return config
+    except ConfigError as e:
+        # Log error and provide minimal working configuration
+        logger.error(f"Configuration error: {str(e)}")
+        logger.warning("Using minimal default configuration - some features may not work properly!")
+        
+        return {
+            "API_KEY": "",
+            "API_SECRET": "",
+            "REDIRECT_URI": "http://localhost:8000/callback",
+            "LOG_LEVEL": "INFO",
+            "DEFAULT_EXCHANGE": "NSE",
+            "DEFAULT_QUANTITY": 1,
+            "RISK_PERCENTAGE": 2.0,
+        }
