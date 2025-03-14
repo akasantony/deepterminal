@@ -1,27 +1,25 @@
 # DeepTerminal
 
-A terminal-based trading application built with Python's Textual library and the Upstox API.
+An algorithmic trading application for futures and options, built with Python and [Textual](https://textual.textualize.io/) for a terminal-based UI.
 
 ## Features
 
-- Authentication with Upstox API
-- Instrument search across multiple exchanges (NSE, BSE, NFO, BFO, MCX, CDS)
-- Live market data updates
-- Order placement (Market, Limit, Stop Loss)
-- Position tracking with live P&L updates
-- Support for custom trading strategies
-
-## Requirements
-
-- Python 3.10+
-- Poetry for dependency management
+- **Algorithmic Trading**: Implement multiple trading strategies like MACD, Stochastic RSI, EMA with different windows, CPR, etc.
+- **Strategy Management**: Weighted decision making across different strategies to generate high-confidence signals.
+- **Position Management**: Automated position entry, exit, stop loss and take profit management.
+- **Risk Management**: Built-in risk management including position sizing, stop losses based on ATR, and more.
+- **Terminal UI**: Beautiful and responsive terminal interface built with Textual.
+- **Broker Agnostic**: Modular design to support multiple brokers through a common interface.
+- **Backtest Engine**: Test your strategies with historical data before running them live.
 
 ## Installation
+
+DeepTerminal uses [Poetry](https://python-poetry.org/) for dependency management.
 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/akasantony/deepterminal.git
+git clone https://github.com/yourusername/deepterminal.git
 cd deepterminal
 ```
 
@@ -31,75 +29,116 @@ cd deepterminal
 poetry install
 ```
 
-3. Configure your Upstox API credentials:
-   - Copy the `.env.example` file to `.env`
-   - Fill in your Upstox API credentials:
-     ```
-     UPSTOX_API_KEY="your-api-key"
-     UPSTOX_API_SECRET="your-api-secret"
-     UPSTOX_REDIRECT_URI="http://localhost:8000/callback"
-     ```
-
 ## Usage
 
-1. Run the application:
+### Command Line Interface
+
+DeepTerminal comes with a command-line interface with several commands:
 
 ```bash
-poetry run trading-app
+# Run the application
+poetry run deepterminal run
+
+# Create a default configuration file
+poetry run deepterminal create-config
+
+# Authenticate with a broker
+poetry run deepterminal authenticate --broker interactive_brokers
+
+# Run a backtest
+poetry run deepterminal backtest --strategy MACDStrategy --symbol AAPL --timeframe 1h --start 2023-01-01
+
+# List all available strategies
+poetry run deepterminal list-strategies
 ```
 
-2. Authenticate with your Upstox account when prompted.
+### Configuration
 
-3. Use the app:
-   - Search for instruments by symbol or name
-   - Place buy/sell orders with different order types
-   - Monitor your positions and P&L in real-time
+Before running DeepTerminal, you need to set up your configuration file:
 
-## Key Bindings
+1. Generate a default configuration file:
 
-- `q`: Quit the application
-- `r`: Refresh data
-- `Ctrl+t`: Toggle dark mode
+```bash
+poetry run deepterminal create-config
+```
 
-## Adding Custom Strategies
+2. Edit the generated file at `~/.config/deepterminal/config.toml` with your broker credentials and preferences.
 
-You can implement your own trading strategies by extending the `TradingStrategy` base class:
+### Adding a New Strategy
+
+1. Create a new Python file in the appropriate strategy directory (e.g., `deepterminal/strategies/trend_following/my_strategy.py`)
+2. Create a class that inherits from `StrategyBase`
+3. Implement the required methods, especially `generate_signals()`
+4. The strategy will be automatically discovered and registered
+
+Example:
 
 ```python
-from src.trading.strategy import TradingStrategy
+from deepterminal.strategies.base import StrategyBase
+from deepterminal.core.models.signal import Signal, SignalFactory, SignalStrength
+from deepterminal.core.models.order import OrderSide
 
-class MyCustomStrategy(TradingStrategy):
-    def initialize(self):
-        # Initialize your strategy parameters and state
-        pass
+class MyStrategy(StrategyBase):
+    """My custom trading strategy."""
 
-    def on_tick_data(self, data):
-        # Process incoming market data
-        pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(name="My Strategy", *args, **kwargs)
 
-    def on_position_update(self, position):
-        # Handle position updates
-        pass
+    def generate_signals(self, data):
+        # Your strategy logic here
+        signals = []
+
+        # Example: Create a buy signal
+        signal = SignalFactory.create_entry_signal(
+            instrument=self.instruments[0],
+            side=OrderSide.BUY,
+            strategy_id=self.id,
+            strength=SignalStrength.STRONG,
+            entry_price=data[self.instruments[0].symbol].iloc[-1]['close'],
+            stop_loss=data[self.instruments[0].symbol].iloc[-1]['close'] * 0.95,
+            take_profit=data[self.instruments[0].symbol].iloc[-1]['close'] * 1.10
+        )
+
+        signals.append(signal)
+        return signals
 ```
+
+### Adding a New Broker
+
+1. Create a new Python file in the exchange adapters directory (e.g., `deepterminal/exchange/adapters/my_broker.py`)
+2. Create a class that inherits from `ExchangeBase`
+3. Implement all required methods to interact with your broker's API
+
+## Application Interface
+
+DeepTerminal provides a rich terminal interface with several panels:
+
+- **Dashboard**: Shows account information, strategy stats, and system status.
+- **Positions**: Displays all current positions with P&L, entry/exit points, and risk metrics.
+- **Signals**: Shows trading signals generated by the strategies.
+- **Strategy Management**: Configure and activate/deactivate strategies.
+- **Emergency Controls**: Quickly pause trading or close all positions.
 
 ## Project Structure
 
-```
-upstox-trading-app/
-├── .env                      # Environment variables
-├── poetry.lock              # Poetry lock file
-├── pyproject.toml           # Poetry dependencies
-├── README.md                # Documentation
-└── src/
-    ├── main.py              # Application entry point
-    ├── auth/                # Authentication
-    ├── api/                 # API client
-    ├── ui/                  # User interface
-    ├── models/              # Data models
-    ├── trading/             # Trading functionality
-    └── utils/               # Utilities
-```
+- `deepterminal/`: Main package
+  - `core/`: Core business logic and domain models
+  - `data/`: Data management (sources, storage, processing)
+  - `exchange/`: Exchange integration and order routing
+  - `indicators/`: Technical indicators implementation
+  - `strategies/`: Trading strategies
+  - `execution/`: Order execution engine
+  - `risk/`: Risk management
+  - `analytics/`: Performance analytics and reporting
+  - `backtesting/`: Backtesting functionality
+  - `ui/`: Terminal user interface
+  - `utils/`: Utility functions
+  - `config/`: Configuration management
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the LICENSE file for details.
